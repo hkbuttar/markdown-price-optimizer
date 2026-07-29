@@ -1,9 +1,9 @@
 """
 tests/test_decomposition.py
 
-Tests for department clustering and rolling-horizon decomposition.
+Tests for department clustering, SKU batching, and rolling-horizon decomposition.
 Uses small synthetic panels so these run fast in CI while still exercising
-the actual window-splitting, commit, and inventory-rollforward logic.
+the actual window-splitting, batching, commit, and inventory-rollforward logic.
 """
 
 import pandas as pd
@@ -12,6 +12,7 @@ import pytest
 from src.decomposition import (
     cluster_by_department,
     _make_windows,
+    _batch_skus,
     rolling_horizon_solve,
     solve_by_department,
 )
@@ -20,9 +21,8 @@ from src.decomposition import (
 def _make_sku_panel(n_weeks: int, starting_inventory: float = 40.0, base_price: float = 10.0, unit_cost: float = 3.0) -> pd.DataFrame:
     """A single-SKU panel spanning n_weeks, with intercept/elasticity set for a
     mild, well-behaved demand curve so the MIP solves quickly and predictably.
-    intercept=4.0 (rather than 2.0) ensures meaningful demand even at full price,
-    and starting_inventory=40.0 keeps the 95% clearance target achievable within
-    the test horizon given that demand level."""
+    intercept=4.0 and starting_inventory=40.0 keep the 95% clearance target
+    achievable within the test horizon given this demand level."""
     weeks = list(range(1, n_weeks + 1))
     rows = []
     for i, w in enumerate(weeks):
@@ -90,6 +90,25 @@ def test_make_windows_rejects_step_larger_than_window():
         _make_windows(list(range(1, 10)), window_size=4, step_size=6)
 
 
+def test_batch_skus_splits_into_correct_sizes():
+    """Batching should split a SKU list into chunks of at most batch_size, with no SKU dropped."""
+    sku_keys = [(f"ITEM_{i}", "STORE_1") for i in range(23)]
+    batches = _batch_skus(sku_keys, batch_size=10)
+
+    assert len(batches) == 3
+    assert [len(b) for b in batches] == [10, 10, 3]
+    all_keys = [key for batch in batches for key in batch]
+    assert all_keys == sku_keys
+
+
+def test_batch_skus_single_batch_when_under_limit():
+    """A SKU list smaller than batch_size should produce exactly one batch."""
+    sku_keys = [(f"ITEM_{i}", "STORE_1") for i in range(5)]
+    batches = _batch_skus(sku_keys, batch_size=100)
+    assert len(batches) == 1
+    assert len(batches[0]) == 5
+
+
 def test_rolling_horizon_solve_is_feasible_and_commits_all_weeks():
     """A small, well-behaved single-SKU panel should solve feasibly across all windows,
     with every week ultimately appearing exactly once in the committed schedule."""
@@ -99,23 +118,22 @@ def test_rolling_horizon_solve_is_feasible_and_commits_all_weeks():
     )
 
     assert feasible is True
-    assert n_windows >= 2  # confirms multiple windows actually ran, not just one
+    assert n_windows >= 2
     assert sorted(schedule["week"].unique()) == list(range(1, 11))
-    # each week committed exactly once -- no double-counting across overlapping windows
     assert schedule.groupby("week").size().eq(1).all()
 
 
 def test_rolling_horizon_solve_respects_clearance_only_at_true_horizon_end():
     """Total units sold across the full horizon should meet the clearance fraction,
     even though interior windows are solved without a clearance requirement."""
-    panel = _make_sku_panel(n_weeks=10, starting_inventory=100.0)
+    panel = _make_sku_panel(n_weeks=10, starting_inventory=40.0)
     schedule, _, feasible, _ = rolling_horizon_solve(
         panel, window_size=6, step_size=3, clearance_fraction=0.95
     )
 
     assert feasible is True
     total_sold = schedule["units_sold"].sum()
-    assert total_sold >= 0.95 * 100.0
+    assert total_sold >= 0.95 * 40.0
 
 
 def test_solve_by_department_returns_one_cluster_result_per_department():
@@ -142,3 +160,20 @@ def test_solve_by_department_can_filter_to_subset_of_departments():
 
     assert len(result.cluster_results) == 1
     assert result.cluster_results[0].dept_id == "DEPT_A"
+
+
+def test_solve_by_department_batches_large_departments_by_sku_count():
+    """A department with more SKUs than sku_batch_size should still solve
+    correctly end-to-end, just internally split into multiple batches."""
+    panels = []
+    for i in range(5):
+        p = _make_sku_panel(n_weeks=6)
+        p["item_id"] = f"ITEM_{i}"
+        panels.append(p)
+    dept_panel = pd.concat(panels, ignore_index=True)
+
+    result = solve_by_department(dept_panel, window_size=4, step_size=2, sku_batch_size=2)
+
+    assert len(result.cluster_results) == 1
+    assert result.cluster_results[0].feasible is True
+    assert set(result.schedule["item_id"].unique()) == {f"ITEM_{i}" for i in range(5)}

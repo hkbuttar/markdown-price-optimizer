@@ -37,19 +37,30 @@ flowchart LR
 
 ## Results
 
-*Placeholder — fill in with actual numbers once the model has been run end-to-end.*
-
-Recovered revenue over a 12-week clearance horizon, MIP-optimized schedule vs. baseline policies:
+Recovered revenue across all modeled departments (4,834 SKU-store pairs, ~15.9% of the full HOBBIES/FOODS/HOUSEHOLD catalog, after filtering for elasticity fit reliability, economic plausibility, and structural feasibility — see Data/Modeling Assumptions below):
 
 | Policy | Recovered Revenue | vs. MIP |
 |---|---|---|
-| **MIP-optimized schedule (this project)** | $XX,XXX | — |
-| Flat 20% discount (naive baseline) | $XX,XXX | −X% |
-| Calendar-based markdown (10/20/30/50 by week) | $XX,XXX | −X% |
+| **MIP-optimized schedule (hybrid decomposition)** | $440,633.34 | — |
+| Flat 20% discount (naive baseline) | $354,659.69 | −24.2% |
+| Calendar-based markdown (10/20/30/50 by week) | $391,296.26 | −12.6% |
 
-> The MIP-optimized schedule recovers **X% more revenue** than a standard calendar-based clearance policy across the evaluated category subset.
+> The MIP-optimized schedule recovers **24.2% more revenue** than a naive flat-discount policy and **12.6% more** than a standard calendar-based clearance schedule, across the modeled subset.
 
-Sensitivity analysis (elasticity assumption, salvage value, clearance deadline) is in `notebooks/final_project.ipynb`.
+**Per-department breakdown:**
+
+| Department | Recovered Revenue | Rolling-Horizon Windows Solved | Feasible |
+|---|---|---|---|
+| FOODS_1 | $25,263.33 | 207 | ✅ |
+| FOODS_2 | $37,002.85 | 276 | ✅ |
+| FOODS_3 | $119,753.50 | 552 | ✅ |
+| HOBBIES_1 | $89,368.87 | 1,035 | ✅ |
+| HOBBIES_2 | $1,297.57 | 69 | ✅ |
+| HOUSEHOLD_1 | $160,611.85 | 1,311 | ✅ |
+| HOUSEHOLD_2 | $7,335.35 | 138 | ✅ |
+| **Total** | **$440,633.34** | **3,588** | **All feasible** |
+
+Solved in ~18.5 minutes (1,112.5s) across all 7 departments using hybrid decomposition (department clustering + SKU batching + rolling horizon) on CPU only — no GPU required. Full methodology, including the elasticity-quality filtering process, is documented in `notebooks/final_project.ipynb` and the project proposal.
 
 ## Repository Structure
 

@@ -68,7 +68,7 @@ def main():
     elasticities = pd.read_csv(args.elasticities)
 
     merged = panel.merge(
-        elasticities[["item_id", "store_id", "base_price", "intercept", "elasticity"]],
+        elasticities[["item_id", "store_id", "base_price", "intercept", "elasticity", "r2"]],  # added r2
         on=["item_id", "store_id"],
         how="inner",  # only keep SKUs that got a fitted elasticity curve
     )

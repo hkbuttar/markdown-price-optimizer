@@ -2,25 +2,27 @@
 decomposition.py
 
 Hybrid decomposition for the markdown MIP: solving every SKU jointly over the
-full clearance horizon is computationally impractical at full catalog scale
-(see README / project proposal for the complexity justification), so this
-module splits the problem two ways:
+full clearance horizon is computationally impractical at full catalog scale,
+so this module splits the problem three ways:
 
 1. Category/department clustering -- SKUs are grouped by dept_id (a natural,
-   pre-existing grouping rather than an arbitrary one) and solved as
-   independent sub-MIPs, since cross-department price interactions are
-   assumed weak.
-2. Rolling-horizon decomposition -- within a cluster, instead of solving all
+   pre-existing grouping) and solved as independent sub-MIPs, since
+   cross-department price interactions are assumed weak.
+2. SKU batching within department -- large departments (e.g. 300+ SKUs) are
+   further split into batches of at most sku_batch_size SKUs, since solving
+   that many SKUs jointly within a single rolling-horizon window is itself a
+   combinatorially hard MIP. Batches are solved independently and their
+   schedules/objectives are combined.
+3. Rolling-horizon decomposition -- within a batch, instead of solving all
    weeks jointly, a sliding window of `window_size` weeks is solved exactly,
    the first `step_size` weeks are committed, inventory is rolled forward
    using the *actual* committed sales, and the window advances. The
    end-of-horizon clearance constraint is only enforced on the window that
-   reaches the true end of the horizon -- interior windows are unconstrained
-   on clearance, since more weeks remain to sell through.
+   reaches the true end of the horizon.
 
 Usage:
     from src.decomposition import solve_by_department
-    schedule = solve_by_department(panel_df, window_size=8, step_size=4)
+    result = solve_by_department(panel_df, window_size=8, step_size=4, sku_batch_size=100)
 """
 
 from dataclasses import dataclass, field
@@ -28,6 +30,8 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from src.model import build_model, solve_model, DEFAULT_CLEARANCE_FRACTION, DEFAULT_DISCOUNT_TIERS
+
+DEFAULT_SKU_BATCH_SIZE = 100
 
 
 @dataclass
@@ -87,6 +91,12 @@ def _make_windows(weeks: list, window_size: int, step_size: int) -> list[list]:
     return windows
 
 
+def _batch_skus(sku_keys: list[tuple], batch_size: int) -> list[list[tuple]]:
+    """Split a department's SKU list into batches of at most batch_size SKUs,
+    so no single rolling-horizon window ever solves more than batch_size SKUs jointly."""
+    return [sku_keys[i:i + batch_size] for i in range(0, len(sku_keys), batch_size)]
+
+
 def rolling_horizon_solve(
     sku_panel_df: pd.DataFrame,
     window_size: int = 8,
@@ -96,8 +106,8 @@ def rolling_horizon_solve(
     solver_name: str = "cbc",
 ) -> tuple[pd.DataFrame, float, bool, int]:
     """
-    Solve one cluster's panel (already filtered to a single department, or any
-    SKU set small enough for model.build_model to handle directly) using a
+    Solve one batch's panel (already filtered to a single department/batch, or
+    any SKU set small enough for model.build_model to handle directly) using a
     rolling horizon. Returns (committed_schedule, total_objective, all_feasible, n_windows).
     """
     discount_tiers = discount_tiers or DEFAULT_DISCOUNT_TIERS
@@ -105,57 +115,69 @@ def rolling_horizon_solve(
     final_week = weeks[-1]
     windows = _make_windows(weeks, window_size, step_size)
 
+    # Precompute each SKU's true starting inventory ONCE from the full panel.
+    # This removes any dependence on that value happening to fall neatly on
+    # a window's first week -- it's restored explicitly wherever needed below.
+    sku_true_inventory: dict[tuple, float] = {}
+    for (item_id, store_id), group in sku_panel_df.groupby(["item_id", "store_id"]):
+        inv_series = group["starting_inventory"].dropna()
+        if not inv_series.empty:
+            sku_true_inventory[(item_id, store_id)] = float(inv_series.iloc[0])
+
     committed_rows = []
     total_objective = 0.0
     all_feasible = True
-
-    # tracks each SKU's actual remaining inventory as windows are committed
     current_inventory: dict[tuple, float] = {}
 
     for window_idx, window_weeks in enumerate(windows):
         is_final_window = final_week in window_weeks
         window_df = sku_panel_df[sku_panel_df["week"].isin(window_weeks)].copy()
-
-        # overwrite starting_inventory on the first week of this window with the
-        # *actual* rolled-forward inventory from previously committed weeks
         first_week_of_window = window_weeks[0]
+
         for (item_id, store_id), group in window_df.groupby(["item_id", "store_id"]):
             sku = (item_id, store_id)
-            mask = (
-                (window_df["item_id"] == item_id)
-                & (window_df["store_id"] == store_id)
-                & (window_df["week"] == first_week_of_window)
-            )
+            group_sorted = group.sort_values("week")
+            earliest_week_in_window = group_sorted["week"].iloc[0]
+
             if sku in current_inventory:
+                # rolled forward from a prior window: overwrite this window's
+                # first week with the actual remaining inventory
+                mask = (
+                    (window_df["item_id"] == item_id)
+                    & (window_df["store_id"] == store_id)
+                    & (window_df["week"] == first_week_of_window)
+                )
                 window_df.loc[mask, "starting_inventory"] = current_inventory[sku]
-            # else: first window ever for this SKU -- keep the panel's original value
+            elif not group["starting_inventory"].notna().any():
+                # first appearance of this SKU in any window, but its true
+                # starting_inventory row didn't land inside this window's
+                # slice -- restore it explicitly on the earliest row present
+                true_inv = sku_true_inventory.get(sku)
+                if true_inv is not None:
+                    mask = (
+                        (window_df["item_id"] == item_id)
+                        & (window_df["store_id"] == store_id)
+                        & (window_df["week"] == earliest_week_in_window)
+                    )
+                    window_df.loc[mask, "starting_inventory"] = true_inv
+            # else: this SKU's true first row is already intact in this window
 
         window_clearance = clearance_fraction if is_final_window else 0.0
 
-        m = build_model(
-            window_df,
-            discount_tiers=discount_tiers,
-            clearance_fraction=window_clearance,
-        )
+        m = build_model(window_df, discount_tiers=discount_tiers, clearance_fraction=window_clearance)
         result = solve_model(m, solver_name=solver_name)
 
         if not result.feasible:
             all_feasible = False
             continue
 
-        # commit only the first step_size weeks of this window (or all of them,
-        # if this is the final window and there's nothing left to roll into)
         commit_weeks = window_weeks if is_final_window else window_weeks[:step_size]
         committed = result.schedule[result.schedule["week"].isin(commit_weeks)].copy()
         committed_rows.append(committed)
 
-        # only the committed portion of this window's objective counts toward
-        # the running total -- recompute revenue from just the committed rows
-        # rather than crediting the full window's (partially uncommitted) objective
         committed_revenue = (committed["price"] * committed["units_sold"]).sum()
         total_objective += committed_revenue
 
-        # roll inventory forward for each SKU based on actual committed sales
         for (item_id, store_id), sku_committed in committed.groupby(["item_id", "store_id"]):
             sku = (item_id, store_id)
             starting_inv = window_df[
@@ -182,11 +204,13 @@ def solve_by_department(
     clearance_fraction: float = DEFAULT_CLEARANCE_FRACTION,
     solver_name: str = "cbc",
     departments: list[str] = None,
+    sku_batch_size: int = DEFAULT_SKU_BATCH_SIZE,
 ) -> DecompositionResult:
     """
-    Full hybrid solve: cluster by department, then solve each department's
-    cluster with a rolling horizon. This is the top-level entry point that
-    replaces attempting one monolithic MIP over the entire catalog.
+    Full hybrid solve: cluster by department, sub-batch large departments by
+    SKU count to keep each joint MIP tractable, then solve each batch with a
+    rolling horizon. This is the top-level entry point that replaces
+    attempting one monolithic MIP over the entire catalog.
     """
     clusters = cluster_by_department(panel_df)
     if departments is not None:
@@ -196,26 +220,49 @@ def solve_by_department(
     all_schedules = []
 
     for dept_id, dept_df in clusters.items():
-        schedule, objective_value, feasible, n_windows = rolling_horizon_solve(
-            dept_df,
-            window_size=window_size,
-            step_size=step_size,
-            discount_tiers=discount_tiers,
-            clearance_fraction=clearance_fraction,
-            solver_name=solver_name,
-        )
+        sku_keys = list(dept_df[["item_id", "store_id"]].drop_duplicates().itertuples(index=False, name=None))
+        sku_batches = _batch_skus(sku_keys, sku_batch_size)
 
-        if not schedule.empty:
-            schedule = schedule.copy()
-            schedule["dept_id"] = dept_id
-            all_schedules.append(schedule)
+        dept_schedules = []
+        dept_objective = 0.0
+        dept_feasible = True
+        dept_windows = 0
+
+        for batch_idx, batch_keys in enumerate(sku_batches):
+            batch_keys_df = pd.DataFrame(batch_keys, columns=["item_id", "store_id"])
+            batch_df = dept_df.merge(batch_keys_df, on=["item_id", "store_id"])
+
+            print(f"    {dept_id} batch {batch_idx + 1}/{len(sku_batches)} ({len(batch_keys)} SKUs)...")
+
+            schedule, objective_value, feasible, n_windows = rolling_horizon_solve(
+                batch_df,
+                window_size=window_size,
+                step_size=step_size,
+                discount_tiers=discount_tiers,
+                clearance_fraction=clearance_fraction,
+                solver_name=solver_name,
+            )
+
+            if not schedule.empty:
+                dept_schedules.append(schedule)
+            dept_objective += objective_value
+            dept_feasible = dept_feasible and feasible
+            dept_windows += n_windows
+
+        dept_schedule = (
+            pd.concat(dept_schedules, ignore_index=True) if dept_schedules else pd.DataFrame()
+        )
+        if not dept_schedule.empty:
+            dept_schedule = dept_schedule.copy()
+            dept_schedule["dept_id"] = dept_id
+            all_schedules.append(dept_schedule)
 
         cluster_results.append(ClusterResult(
             dept_id=dept_id,
-            feasible=feasible,
-            schedule=schedule,
-            objective_value=objective_value,
-            n_windows_solved=n_windows,
+            feasible=dept_feasible,
+            schedule=dept_schedule,
+            objective_value=dept_objective,
+            n_windows_solved=dept_windows,
         ))
 
     combined_schedule = (

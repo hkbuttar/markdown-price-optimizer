@@ -1,0 +1,46 @@
+{
+  "solve_time_seconds": 1112.4865040779114,
+  "mip_total_revenue": 440633.3386594943,
+  "all_departments_feasible": true,
+  "per_department_status": {
+    "FOODS_1": {
+      "feasible": true,
+      "objective_value": 25263.331298236808,
+      "n_windows_solved": 207
+    },
+    "FOODS_2": {
+      "feasible": true,
+      "objective_value": 37002.85364019717,
+      "n_windows_solved": 276
+    },
+    "FOODS_3": {
+      "feasible": true,
+      "objective_value": 119753.49835140762,
+      "n_windows_solved": 552
+    },
+    "HOBBIES_1": {
+      "feasible": true,
+      "objective_value": 89368.87250240581,
+      "n_windows_solved": 1035
+    },
+    "HOBBIES_2": {
+      "feasible": true,
+      "objective_value": 1297.5748562594797,
+      "n_windows_solved": 69
+    },
+    "HOUSEHOLD_1": {
+      "feasible": true,
+      "objective_value": 160611.853013703,
+      "n_windows_solved": 1311
+    },
+    "HOUSEHOLD_2": {
+      "feasible": true,
+      "objective_value": 7335.35499728447,
+      "n_windows_solved": 138
+    }
+  },
+  "flat_discount_baseline_revenue": 354659.6932374194,
+  "calendar_baseline_revenue": 391296.25910446147,
+  "pct_improvement_vs_flat": 24.24116612668518,
+  "pct_improvement_vs_calendar": 12.608625410308786
+}
