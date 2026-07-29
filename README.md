@@ -41,26 +41,26 @@ Recovered revenue across all modeled departments (4,834 SKU-store pairs, ~15.9% 
 
 | Policy | Recovered Revenue | vs. MIP |
 |---|---|---|
-| **MIP-optimized schedule (hybrid decomposition)** | $440,633.34 | — |
-| Flat 20% discount (naive baseline) | $354,659.69 | −24.2% |
-| Calendar-based markdown (10/20/30/50 by week) | $391,296.26 | −12.6% |
+| **MIP-optimized schedule (hybrid decomposition)** | $438,202.26 | — |
+| Flat 20% discount (naive baseline) | $354,659.69 | −23.6% |
+| Calendar-based markdown (10/20/30/50 by week) | $391,296.26 | −12.0% |
 
-> The MIP-optimized schedule recovers **24.2% more revenue** than a naive flat-discount policy and **12.6% more** than a standard calendar-based clearance schedule, across the modeled subset.
+> The MIP-optimized schedule recovers **23.6% more revenue** than a naive flat-discount policy and **12.0% more** than a standard calendar-based clearance schedule, across the modeled subset.
 
 **Per-department breakdown:**
 
 | Department | Recovered Revenue | Rolling-Horizon Windows Solved | Feasible |
 |---|---|---|---|
-| FOODS_1 | $25,263.33 | 207 | ✅ |
-| FOODS_2 | $37,002.85 | 276 | ✅ |
-| FOODS_3 | $119,753.50 | 552 | ✅ |
-| HOBBIES_1 | $89,368.87 | 1,035 | ✅ |
-| HOBBIES_2 | $1,297.57 | 69 | ✅ |
-| HOUSEHOLD_1 | $160,611.85 | 1,311 | ✅ |
-| HOUSEHOLD_2 | $7,335.35 | 138 | ✅ |
-| **Total** | **$440,633.34** | **3,588** | **All feasible** |
+| FOODS_1 | $25,243.85 | 207 | ✅ |
+| FOODS_2 | $36,948.81 | 276 | ✅ |
+| FOODS_3 | $119,474.80 | 552 | ✅ |
+| HOBBIES_1 | $89,341.21 | 1,035 | ✅ |
+| HOBBIES_2 | $1,271.26 | 69 | ✅ |
+| HOUSEHOLD_1 | $158,619.70 | 1,311 | ✅ |
+| HOUSEHOLD_2 | $7,302.64 | 138 | ✅ |
+| **Total** | **$438,202.26** | **3,588** | **All feasible** |
 
-Solved in ~18.5 minutes (1,112.5s) across all 7 departments using hybrid decomposition (department clustering + SKU batching + rolling horizon) on CPU only — no GPU required. Full methodology, including the elasticity-quality filtering process, is documented in `notebooks/final_project.ipynb` and the project proposal.
+Solved in ~19.4 minutes (1,161.9s) across all 7 departments using hybrid decomposition (department clustering + SKU batching + rolling horizon) on CPU only — no GPU required. Full methodology, including the elasticity-quality filtering process, is documented in `notebooks/final_project.ipynb` and the project proposal.
 
 ## Repository Structure
 

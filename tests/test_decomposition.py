@@ -3,7 +3,8 @@ tests/test_decomposition.py
 
 Tests for department clustering, SKU batching, and rolling-horizon decomposition.
 Uses small synthetic panels so these run fast in CI while still exercising
-the actual window-splitting, batching, commit, and inventory-rollforward logic.
+the actual window-splitting, batching, commit, inventory-rollforward, and
+cross-window monotonicity logic.
 """
 
 import pandas as pd
@@ -134,6 +135,30 @@ def test_rolling_horizon_solve_respects_clearance_only_at_true_horizon_end():
     assert feasible is True
     total_sold = schedule["units_sold"].sum()
     assert total_sold >= 0.95 * 40.0
+
+
+def test_rolling_horizon_solve_is_monotonic_across_window_boundaries():
+    """
+    Regression test for the cross-window monotonicity bug: price must never
+    rise (tier must never decrease) anywhere in the committed schedule, INCLUDING
+    at the boundary between one window's last committed week and the next
+    window's first committed week -- not just within a single window's solve.
+    """
+    # a longer horizon spanning several windows, so boundaries are actually exercised
+    panel = _make_sku_panel(n_weeks=16, starting_inventory=40.0)
+    schedule, _, feasible, n_windows = rolling_horizon_solve(
+        panel, window_size=6, step_size=3, clearance_fraction=0.95
+    )
+
+    assert feasible is True
+    assert n_windows >= 3  # confirms multiple window boundaries actually occurred
+
+    tiers_in_order = schedule.sort_values("week")["tier"].tolist()
+    # tier index must never decrease (discount depth must never shallow) at
+    # any point in the full committed schedule, across all window boundaries
+    assert all(t2 >= t1 for t1, t2 in zip(tiers_in_order, tiers_in_order[1:])), (
+        f"Tier decreased somewhere in the schedule (price rose): {tiers_in_order}"
+    )
 
 
 def test_solve_by_department_returns_one_cluster_result_per_department():

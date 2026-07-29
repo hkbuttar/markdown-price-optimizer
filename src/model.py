@@ -79,6 +79,7 @@ def build_model(
     min_margin: float = DEFAULT_MIN_MARGIN,
     salvage_penalty_per_unit: float = DEFAULT_SALVAGE_PENALTY,
     allow_emergency_final_week: bool = True,
+    min_tier_by_sku: dict[tuple, int] = None,
 ) -> pyo.ConcreteModel:
     """
     Build the markdown MIP for a set of SKUs over their shared clearance horizon.
@@ -88,9 +89,17 @@ def build_model(
         per SKU), unit_cost, base_price, and optionally intercept, elasticity
         (fitted curves from elasticity.py -- falls back to a default demand
         curve if absent, e.g. for quick tests).
+
+    min_tier_by_sku: optional dict mapping (item_id, store_id) -> minimum tier
+        index allowed on that SKU's FIRST week in this panel. Used by
+        decomposition.py's rolling horizon to carry forward the last committed
+        discount depth across window boundaries -- without this, monotonic
+        pricing is only enforced WITHIN a single window, and a SKU's price can
+        illegally "reset" back toward full price when a new window begins.
     """
     discount_tiers = discount_tiers or DEFAULT_DISCOUNT_TIERS
     n_tiers = len(discount_tiers)
+    min_tier_by_sku = min_tier_by_sku or {}
 
     df = panel_df.copy().sort_values(["item_id", "store_id", "week"]).reset_index(drop=True)
     sku_keys = list(df[["item_id", "store_id"]].drop_duplicates().itertuples(index=False, name=None))
@@ -143,6 +152,20 @@ def build_model(
                 if not is_final and price < floor_price - 1e-9:
                     model.y[item_id, store_id, w, t].fix(0)
 
+    # cross-window monotonicity floor: on this SKU's FIRST week in this panel,
+    # disallow any tier shallower than the discount depth already committed in
+    # a previous (already-solved) rolling-horizon window. Without this, price
+    # can illegally rise back toward full price when a new window begins,
+    # since monotonicity is otherwise only enforced WITHIN one window's solve.
+    for item_id, store_id in sku_keys:
+        sku = (item_id, store_id)
+        if sku in min_tier_by_sku:
+            first_week = weeks_by_sku[sku][0]
+            floor_tier = min_tier_by_sku[sku]
+            for t, price, demand in tier_data[(item_id, store_id, first_week)]:
+                if t < floor_tier:
+                    model.y[item_id, store_id, first_week, t].fix(0)
+
     for item_id, store_id in sku_keys:
         sku = (item_id, store_id)
         weeks = weeks_by_sku[sku]
@@ -183,7 +206,8 @@ def build_model(
                     == model.inv[item_id, store_id, prev_w] - model.units_sold[item_id, store_id, prev_w]
                 )
 
-        # monotonic pricing: discount depth (tier index) cannot decrease week over week
+        # monotonic pricing WITHIN this window: discount depth (tier index)
+        # cannot decrease week over week
         for i in range(1, len(weeks)):
             w_prev, w_curr = weeks[i - 1], weeks[i]
             tier_index_prev = sum(t * model.y[item_id, store_id, w_prev, t] for t in range(n_tiers))

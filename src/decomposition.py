@@ -8,17 +8,25 @@ so this module splits the problem three ways:
 1. Category/department clustering -- SKUs are grouped by dept_id (a natural,
    pre-existing grouping) and solved as independent sub-MIPs, since
    cross-department price interactions are assumed weak.
-2. SKU batching within department -- large departments (e.g. 300+ SKUs) are
-   further split into batches of at most sku_batch_size SKUs, since solving
-   that many SKUs jointly within a single rolling-horizon window is itself a
-   combinatorially hard MIP. Batches are solved independently and their
-   schedules/objectives are combined.
+2. SKU batching within department -- large departments are further split into
+   batches of at most sku_batch_size SKUs, since solving that many SKUs
+   jointly within a single rolling-horizon window is itself a combinatorially
+   hard MIP. Batches are solved independently and their schedules/objectives
+   are combined.
 3. Rolling-horizon decomposition -- within a batch, instead of solving all
    weeks jointly, a sliding window of `window_size` weeks is solved exactly,
    the first `step_size` weeks are committed, inventory is rolled forward
    using the *actual* committed sales, and the window advances. The
    end-of-horizon clearance constraint is only enforced on the window that
    reaches the true end of the horizon.
+
+Cross-window monotonicity: each window's MIP enforces monotonic (non-increasing)
+pricing WITHIN that window, but nothing inherently stops the NEXT window from
+re-solving back toward tier 0 (full price) once a fresh window begins. To
+prevent price from illegally "resetting" upward across a window boundary, the
+last COMMITTED tier for each SKU is tracked and passed into the next window's
+build_model() call as a floor (min_tier_by_sku), fixing any shallower tier to
+zero on that SKU's first week in the new window.
 
 Usage:
     from src.decomposition import solve_by_department
@@ -128,6 +136,9 @@ def rolling_horizon_solve(
     total_objective = 0.0
     all_feasible = True
     current_inventory: dict[tuple, float] = {}
+    # tracks the last COMMITTED tier per SKU, carried forward as a floor so
+    # price cannot illegally rise back toward full price at a window boundary
+    min_tier_floor: dict[tuple, int] = {}
 
     for window_idx, window_weeks in enumerate(windows):
         is_final_window = final_week in window_weeks
@@ -164,7 +175,12 @@ def rolling_horizon_solve(
 
         window_clearance = clearance_fraction if is_final_window else 0.0
 
-        m = build_model(window_df, discount_tiers=discount_tiers, clearance_fraction=window_clearance)
+        m = build_model(
+            window_df,
+            discount_tiers=discount_tiers,
+            clearance_fraction=window_clearance,
+            min_tier_by_sku=min_tier_floor,
+        )
         result = solve_model(m, solver_name=solver_name)
 
         if not result.feasible:
@@ -180,11 +196,18 @@ def rolling_horizon_solve(
 
         for (item_id, store_id), sku_committed in committed.groupby(["item_id", "store_id"]):
             sku = (item_id, store_id)
+            sku_committed_sorted = sku_committed.sort_values("week")
+
             starting_inv = window_df[
                 (window_df["item_id"] == item_id) & (window_df["store_id"] == store_id)
             ]["starting_inventory"].dropna().iloc[0]
-            sold_in_committed_weeks = sku_committed["units_sold"].sum()
+            sold_in_committed_weeks = sku_committed_sorted["units_sold"].sum()
             current_inventory[sku] = max(starting_inv - sold_in_committed_weeks, 0.0)
+
+            # carry forward the last committed tier as next window's floor,
+            # so price cannot illegally rise back toward full price
+            last_committed_tier = sku_committed_sorted["tier"].iloc[-1]
+            min_tier_floor[sku] = int(last_committed_tier)
 
     if committed_rows:
         full_schedule = pd.concat(committed_rows, ignore_index=True).sort_values(
