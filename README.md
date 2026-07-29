@@ -229,9 +229,7 @@ markdown-price-optimizer/
 │
 └── outputs/
     ├── sample_markdown_schedule.csv # the full committed schedule from the last full solve
-    ├── results_summary.json         # revenue totals, baseline comparisons, per-department stats
-    └── screenshots/
-        └── app_demo.png            # screenshot of the running Streamlit app
+    └── results_summary.json         # revenue totals, baseline comparisons, per-department stats
 ```
 
 ## Data
